@@ -66,6 +66,18 @@ h3.sh em{font-style:normal;font-family:var(--th);font-size:11px;color:var(--dim)
 .timer{background:var(--panel);border:3px solid var(--line);padding:15px;box-shadow:3px 3px 0 rgba(0,0,0,.4)}
 .trow{display:flex;gap:9px;flex-wrap:wrap;align-items:center}
 .trow select{background:#0A0B1C;border:3px solid var(--line);color:var(--white);padding:8px 10px;font-family:var(--th);font-size:13px}
+.trow select{flex:1 1 150px}
+.minbox{display:flex;align-items:center;gap:6px;background:#0A0B1C;border:3px solid var(--line);padding:4px 7px}
+.minbox input{width:56px;background:none;border:none;color:var(--yellow);font-family:var(--px);font-size:14px;
+  text-align:center;padding:4px 0;-moz-appearance:textfield}
+.minbox input::-webkit-outer-spin-button,.minbox input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+.munit{font-size:11px;color:var(--dim)}
+.preset{flex:1;min-width:44px}
+.preset.on{background:var(--pink-dk);border-color:var(--pink);color:var(--white)}
+.qact{display:flex;gap:6px;margin-top:11px}
+.qact .pbtn{flex:1}
+.quest.done .qact{display:none}
+.qclear{margin-top:10px;font-family:var(--px);font-size:8px;color:var(--green)}
 .clock{font-family:var(--px);font-size:34px;color:var(--yellow);text-align:center;padding:10px 0 4px;letter-spacing:2px}
 .clock.run{color:var(--green)}
 .tnote{font-size:11.5px;color:var(--dim);text-align:center;margin-bottom:10px}
@@ -242,10 +254,26 @@ footer{margin-top:34px;text-align:center;font-family:var(--px);font-size:7px;col
       <div class="tbar"><i id="tbar" style="width:0%"></i></div>
       <div class="trow">
         <select id="tSubj"></select>
-        <button class="pbtn" id="t25">START 25</button>
-        <button class="pbtn" id="t50">START 50</button>
-        <button class="pbtn pink" id="tStop" style="display:none">GIVE UP</button>
+        <div class="minbox">
+          <button class="pbtn tiny" id="mDn">−</button>
+          <input id="tMin" type="number" min="5" max="180" step="5" value="25" inputmode="numeric">
+          <span class="munit">นาที</span>
+          <button class="pbtn tiny" id="mUp">+</button>
+        </div>
       </div>
+      <div class="trow" id="presets" style="margin-top:8px">
+        <button class="pbtn tiny preset" data-p="10">10</button>
+        <button class="pbtn tiny preset" data-p="15">15</button>
+        <button class="pbtn tiny preset" data-p="25">25</button>
+        <button class="pbtn tiny preset" data-p="30">30</button>
+        <button class="pbtn tiny preset" data-p="45">45</button>
+        <button class="pbtn tiny preset" data-p="60">60</button>
+      </div>
+      <div class="trow" style="margin-top:10px">
+        <button class="pbtn gold" id="tGo" style="flex:1">START</button>
+        <button class="pbtn pink" id="tStop" style="display:none;flex:1">GIVE UP</button>
+      </div>
+      <p class="hint" id="alarmNote" style="margin:11px 0 0;font-size:11px"></p>
       <div class="streak" id="streak"></div>
     </div>
   </section>
@@ -483,6 +511,66 @@ function sfxLevel(){[523,659,784,1047].forEach(function(f,i){setTimeout(function
 function sfxDone(){[784,988,1175,1568].forEach(function(f,i){setTimeout(function(){beep(f,.2,.07)},i*130)})}
 function sfxNope(){beep(160,.22,.05,'sawtooth')}
 
+/* ===== ALARM: เสียงเตือนที่ดังได้แม้ปิดจอ =====
+   เคล็ดลับ: เล่นเสียงเงียบวนลูปไว้ระหว่างจับเวลา ระบบจะถือว่าหน้านี้กำลังเล่นสื่ออยู่
+   จึงไม่หยุดเวลาและยังส่งเสียงออกลำโพงได้ตอนครบเวลา */
+function makeWav(sm,rate){
+  var n=sm.length,buf=new ArrayBuffer(44+n),v=new DataView(buf);
+  function w(o,s){for(var i=0;i<s.length;i++)v.setUint8(o+i,s.charCodeAt(i))}
+  w(0,'RIFF');v.setUint32(4,36+n,true);w(8,'WAVE');w(12,'fmt ');
+  v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);
+  v.setUint32(24,rate,true);v.setUint32(28,rate,true);v.setUint16(32,1,true);v.setUint16(34,8,true);
+  w(36,'data');v.setUint32(40,n,true);
+  for(var i=0;i<n;i++)v.setUint8(44+i,sm[i]);
+  return URL.createObjectURL(new Blob([buf],{type:'audio/wav'}));
+}
+var RATE=8000, silentEl=null, alarmEl=null;
+function buildAudio(){
+  if(silentEl)return;
+  var sil=new Uint8Array(RATE*2);
+  for(var i=0;i<sil.length;i++)sil[i]=128+(i%2?1:0);   /* เกือบเงียบสนิท แต่ไม่ใช่ศูนย์ */
+  silentEl=new Audio(makeWav(sil,RATE)); silentEl.loop=true; silentEl.volume=0.02;
+  var notes=[784,988,1175,1568], seq=[], gap=Math.round(RATE*0.05);
+  for(var rep=0;rep<3;rep++){
+    notes.forEach(function(f){
+      var len=Math.round(RATE*0.17);
+      for(var i=0;i<len;i++){
+        var env=1-(i/len)*0.35;
+        seq.push(128+Math.round(52*env*(Math.sin(2*Math.PI*f*i/RATE)>0?1:-1)));
+      }
+      for(var g=0;g<gap;g++)seq.push(128);
+    });
+  }
+  var last=Math.round(RATE*0.7);
+  for(var i=0;i<last;i++)seq.push(128+Math.round(52*(1-i/last)*(Math.sin(2*Math.PI*1568*i/RATE)>0?1:-1)));
+  alarmEl=new Audio(makeWav(new Uint8Array(seq),RATE)); alarmEl.volume=1;
+}
+function keepAlive(on){
+  buildAudio();
+  try{ if(on){silentEl.currentTime=0;silentEl.play().catch(function(){})} else silentEl.pause() }catch(e){}
+}
+function ringAlarm(){
+  buildAudio();
+  try{ alarmEl.currentTime=0; alarmEl.play().catch(function(){}) }catch(e){}
+  try{ if(navigator.vibrate) navigator.vibrate([400,150,400,150,700]) }catch(e){}
+}
+function notify(title,body){
+  try{ if(window.Notification&&Notification.permission==='granted'&&document.visibilityState!=='visible')
+    new Notification(title,{body:body,tag:'triam'}) }catch(e){}
+}
+function askNotify(){
+  try{ if(window.Notification&&Notification.permission==='default') Notification.requestPermission() }catch(e){}
+}
+
+/* ===== เวลาที่เลือกเอง ===== */
+function curMin(){
+  var el=document.getElementById('tMin');
+  var v=parseInt(el.value,10); if(isNaN(v))v=25;
+  v=clamp(v,5,180); el.value=v; return v;
+}
+/* XP = 0.44 ต่อนาที + โบนัส 15% ถ้าอ่านยาว 45 นาทีขึ้นไป */
+function xpFor(min){ return Math.max(1,Math.round(min*0.44*(min>=45?1.15:1))) }
+
 /* ================= CANVAS ================= */
 var cvs=document.getElementById('game'),ctx=cvs.getContext('2d');
 var VW=320,VH=168,G=132,ZW=1600,WW=ZW*8;
@@ -660,35 +748,48 @@ function renderQuests(){
     '<div class="empty">คลังเควสว่าง กด EDIT MISSIONS แล้วเพิ่มเข้าไปก่อน</div>';return}
   document.getElementById('quests').innerHTML=picks.map(function(q){
    var done=S.questDone.indexOf(q.id)>=0;
-   return '<button class="quest'+(done?' done':'')+'" data-q="'+q.id+'" data-xp="'+q.xp+'">'+
+   return '<div class="quest'+(done?' done':'')+'">'+
     '<div class="qtop"><span class="qk">'+(done?'CLEAR':esc(q.k))+'</span><span class="qx">+'+q.xp+' XP</span></div>'+
-    '<p>'+esc(q.t)+'</p></button>'}).join('');
+    '<p>'+esc(q.t)+'</p>'+
+    (done?'<div class="qclear">เคลียร์แล้ววันนี้</div>':
+     '<div class="qact"><button class="pbtn tiny" data-qt="'+q.id+'">จับเวลา</button>'+
+     '<button class="pbtn tiny gold" data-q="'+q.id+'">เสร็จแล้ว</button></div>')+
+    '</div>'}).join('');
+
   [].forEach.call(document.querySelectorAll('[data-q]'),function(el){
    el.onclick=async function(){
      var i=el.dataset.q; if(S.questDone.indexOf(i)>=0)return;
-     var before=levelInfo(totalExp()).lv, xp=+el.dataset.xp;
+     var before=levelInfo(totalExp()).lv, xp=+0;
+     S.quests.forEach(function(x){if(x.id===i)xp=x.xp});
      S.questDone.push(i);
      var share=Math.round(xp/SUBJECTS.length);
      SUBJECTS.forEach(function(s){S.exp[s.id]+=share});
      logDay(0); fx('+'+xp,'#38D048');
      await save(); renderAll(); announce(before,'MISSION CLEAR','+'+xp+' XP');
    }});
+
+  [].forEach.call(document.querySelectorAll('[data-qt]'),function(el){
+   el.onclick=function(){
+     if(S.timer&&S.timer.endAt>Date.now()){sfxNope();toast('BUSY','มีกิจกรรมกำลังจับเวลาอยู่');return}
+     startTimer(curMin(),'quest',el.dataset.qt);
+     document.getElementById('clock').scrollIntoView({behavior:'smooth',block:'center'});
+   }});
 }
 function renderPads(){
+  var m=curMin(), gain=Math.max(1,xpFor(m)-3);
   document.getElementById('pads').innerHTML=SUBJECTS.map(function(s){
    var li=levelInfo(S.exp[s.id]);
    return '<div class="pad"><div class="nm">'+s.icon+' '+s.name+'<span>LV '+li.lv+'</span></div>'+
     '<div class="bar"><i style="width:'+(li.cur/li.req*100)+'%;background:'+s.color+'"></i></div>'+
-    '<div class="row"><button class="pbtn" data-s="'+s.id+'" data-m="25">+25 MIN</button>'+
-    '<button class="pbtn" data-s="'+s.id+'" data-m="50">+50 MIN</button></div></div>'}).join('');
+    '<div class="row"><button class="pbtn" data-s="'+s.id+'">บันทึก '+m+' นาที · +'+gain+' XP</button></div></div>'}).join('');
   [].forEach.call(document.querySelectorAll('[data-s]'),function(el){
    el.onclick=async function(){
-     var m=+el.dataset.m, gain=(m===50?26:11)-3;  /* บันทึกย้อนหลังได้น้อยกว่าจับเวลาจริง */
+     var mm=curMin(), g=Math.max(1,xpFor(mm)-3);   /* ย้อนหลังได้น้อยกว่าจับเวลาจริง */
      var before=levelInfo(totalExp()).lv;
-     S.exp[el.dataset.s]+=gain; S.minutes+=m; logDay(m);
+     S.exp[el.dataset.s]+=g; S.minutes+=mm; logDay(mm);
      var sub=null;SUBJECTS.forEach(function(x){if(x.id===el.dataset.s)sub=x});
-     fx('+'+gain,sub.color);
-     await save(); renderAll(); announce(before,'+'+gain+' XP','บันทึกย้อนหลัง · '+sub.name);
+     fx('+'+g,sub.color);
+     await save(); renderAll(); announce(before,'+'+g+' XP','บันทึกย้อนหลัง · '+sub.name);
    }});
 }
 function renderExams(){
@@ -726,27 +827,37 @@ function renderTimer(){
   var sel=document.getElementById('tSubj');
   if(!sel.options.length) sel.innerHTML=SUBJECTS.map(function(s){return '<option value="'+s.id+'">'+s.icon+' '+s.name+'</option>'}).join('');
   var run=!!(S.timer&&S.timer.endAt>Date.now());
-  document.getElementById('t25').style.display=run?'none':'';
-  document.getElementById('t50').style.display=run?'none':'';
+  var m=curMin();
+  document.getElementById('tGo').style.display=run?'none':'';
   document.getElementById('tStop').style.display=run?'':'none';
-  sel.disabled=run;
+  document.getElementById('presets').style.display=run?'none':'';
+  document.getElementById('tGo').textContent='START · +'+xpFor(m)+' XP';
+  sel.disabled=run; document.getElementById('tMin').disabled=run;
+  [].forEach.call(document.querySelectorAll('.preset'),function(b){
+    b.classList.toggle('on',+b.dataset.p===m)});
   var db=document.getElementById('dBtn'), dsub=document.getElementById('dSub');
+  var an=document.getElementById('alarmNote');
   if(run){
-    var sub=null;SUBJECTS.forEach(function(x){if(x.id===S.timer.subj)sub=x});
-    sel.value=S.timer.subj;
-    document.getElementById('tnote').textContent='กำลังอ่าน '+sub.name+' — ปิดหน้านี้ได้ นาฬิกาเดินต่อ';
+    var lbl;
+    if(S.timer.mode==='quest'){ lbl='เควส'; }
+    else{ var sub=null;SUBJECTS.forEach(function(x){if(x.id===S.timer.subj)sub=x});
+          sel.value=S.timer.subj; lbl=sub?sub.name:'อ่านหนังสือ'; }
+    document.getElementById('tMin').value=S.timer.minutes;
+    document.getElementById('tnote').textContent='กำลังทำ '+lbl+' — ปิดจอได้เลย ครบเวลาแล้วจะมีเสียงเตือน';
+    an.innerHTML='<b style="color:var(--green)">เสียงเตือนพร้อมแล้ว</b> · อย่าปิดแท็บนี้ ปิดแค่หน้าจอได้';
     db.textContent='GIVE UP'; db.classList.add('pink');
-    dsub.textContent='กำลังอ่าน '+sub.name;
+    dsub.textContent='กำลังทำ '+lbl;
   }else{
-    document.getElementById('clock').textContent='25:00';
+    var mm=String(m).padStart(2,'0')+':00';
+    document.getElementById('clock').textContent=mm;
     document.getElementById('clock').classList.remove('run');
     document.getElementById('tbar').style.width='0%';
-    document.getElementById('tnote').textContent='เลือกวิชาแล้วกดเริ่ม ปิดหน้าเว็บได้ นาฬิกาไม่หยุด';
-    document.getElementById('dClock').textContent='25:00';
+    document.getElementById('tnote').textContent='เลือกวิชากับเวลาที่อยากอ่าน แล้วกดเริ่ม';
+    an.textContent='ครบเวลาจะมีเสียงเตือนดังเอง ไม่ต้องคอยเปิดดู';
+    document.getElementById('dClock').textContent=mm;
     document.getElementById('dClock').classList.remove('run');
-    db.textContent='START 25'; db.classList.remove('pink');
-    var q=MARKS.length?('เควสถัดไปห่าง '+MARKS[0].xp+' XP'):'พร้อมเริ่มอ่าน';
-    dsub.textContent=q;
+    db.textContent='START '+m; db.classList.remove('pink');
+    dsub.textContent=MARKS.length?('เควสถัดไปห่าง '+MARKS[0].xp+' XP'):'พร้อมเริ่มอ่าน';
   }
 }
 function tick(){
@@ -761,42 +872,69 @@ function tick(){
   document.getElementById('tbar').style.width=((tot-left)/tot*100)+'%';
   if(left<=3)beep(660,.09,.04);
 }
-async function startTimer(min){
-  var subj=document.getElementById('tSubj').value;
-  ac(); beep(880,.09,.05);
-  S.timer={subj:subj,minutes:min,endAt:Date.now()+min*60000};
-  keepAwake(true);
+async function startTimer(min,mode,qid){
+  min=min||curMin();
+  ac(); buildAudio(); askNotify(); beep(880,.09,.05);
+  keepAlive(true); keepAwake(true);
+  S.timer={mode:mode||'study',subj:document.getElementById('tSubj').value,qid:qid||null,
+           minutes:min,endAt:Date.now()+min*60000};
   await save(); renderTimer(); tick();
-  toast('TIMER START','อ่าน '+min+' นาที ห้ามแตะมือถือ');
+  clearTimeout(ALARM_T);
+  ALARM_T=setTimeout(function(){ if(S.timer)finishTimer() }, min*60000+400);
+  toast('TIMER START',min+' นาที · ปิดจอได้ เดี๋ยวมีเสียงเรียก');
 }
+var ALARM_T=null;
 async function finishTimer(){
   var tm=S.timer; if(!tm)return;
-  S.timer=null; keepAwake(false);
-  var gain=tm.minutes===50?26:11;
-  var before=levelInfo(totalExp()).lv;
-  S.exp[tm.subj]+=gain; S.minutes+=tm.minutes; logDay(tm.minutes);
-  var sub=null;SUBJECTS.forEach(function(x){if(x.id===tm.subj)sub=x});
-  fx('+'+gain,sub.color); sfxDone();
+  S.timer=null; clearTimeout(ALARM_T); keepAlive(false); keepAwake(false);
+  var before=levelInfo(totalExp()).lv, gain, label;
+  if(tm.mode==='quest'){
+    var q=null; S.quests.forEach(function(x){if(x.id===tm.qid)q=x});
+    gain=q?q.xp:xpFor(tm.minutes); label=q?q.k:'QUEST';
+    if(q&&S.questDone.indexOf(q.id)<0)S.questDone.push(q.id);
+    var share=Math.round(gain/SUBJECTS.length);
+    SUBJECTS.forEach(function(s){S.exp[s.id]+=share});
+    fx('+'+gain,'#38D048');
+  }else{
+    gain=xpFor(tm.minutes);
+    var sub=null;SUBJECTS.forEach(function(x){if(x.id===tm.subj)sub=x});
+    label=sub?sub.name:'อ่านหนังสือ';
+    S.exp[tm.subj]+=gain;
+    fx('+'+gain,sub?sub.color:'#FCD800');
+  }
+  S.minutes+=tm.minutes; logDay(tm.minutes);
+  ringAlarm(); notify('ครบ '+tm.minutes+' นาทีแล้ว','ได้ +'+gain+' XP · '+label);
   await save(); renderAll();
-  setTimeout(function(){announce(before,'FOCUS COMPLETE','+'+gain+' XP · '+sub.name)},700);
+  setTimeout(function(){announce(before,'FOCUS COMPLETE','+'+gain+' XP · '+label)},900);
 }
 async function stopTimer(){
-  S.timer=null; keepAwake(false); sfxNope(); await save(); renderTimer();
+  S.timer=null; clearTimeout(ALARM_T); keepAlive(false); keepAwake(false);
+  sfxNope(); await save(); renderTimer();
   toast('GAVE UP','ไม่ได้ XP รอบนี้ พักแล้วเริ่มใหม่ได้');
 }
-document.getElementById('t25').onclick=function(){startTimer(25)};
-document.getElementById('t50').onclick=function(){startTimer(50)};
+document.getElementById('tGo').onclick=function(){startTimer()};
 document.getElementById('tStop').onclick=function(){if(confirm('เลิกกลางคันจะไม่ได้ XP เลย แน่ใจไหม?'))stopTimer()};
 document.getElementById('dBtn').onclick=function(){
   if(S.timer&&S.timer.endAt>Date.now()){if(confirm('เลิกกลางคันจะไม่ได้ XP เลย แน่ใจไหม?'))stopTimer()}
-  else{startTimer(25);document.getElementById('clock').scrollIntoView({behavior:'smooth',block:'center'})}
+  else{startTimer();document.getElementById('clock').scrollIntoView({behavior:'smooth',block:'center'})}
 };
+document.getElementById('tMin').oninput=function(){renderTimer();renderPads()};
+document.getElementById('tMin').onblur=function(){curMin();renderTimer();renderPads()};
+document.getElementById('mUp').onclick=function(){
+  var e=document.getElementById('tMin');e.value=clamp(curMin()+5,5,180);renderTimer();renderPads();beep(660,.05,.04)};
+document.getElementById('mDn').onclick=function(){
+  var e=document.getElementById('tMin');e.value=clamp(curMin()-5,5,180);renderTimer();renderPads();beep(520,.05,.04)};
+[].forEach.call(document.querySelectorAll('.preset'),function(b){
+  b.onclick=function(){document.getElementById('tMin').value=b.dataset.p;renderTimer();renderPads();beep(760,.05,.04)}});
 setInterval(tick,1000);
 
 /* --- มือถือ: กลับมาที่หน้าเว็บแล้วเช็คว่านาฬิกาครบหรือยัง --- */
 document.addEventListener('visibilitychange',function(){
   if(document.visibilityState!=='visible'||!S)return;
-  if(S.timer&&S.timer.endAt<=Date.now())finishTimer(); else tick();
+  if(S.timer&&S.timer.endAt<=Date.now())finishTimer();
+  else if(S.timer){keepAlive(true);tick();
+    clearTimeout(ALARM_T);ALARM_T=setTimeout(function(){if(S.timer)finishTimer()},S.timer.endAt-Date.now()+400)}
+  else tick();
   if(S.questDate!==today()){S.questDate=today();S.questDone=[];save();renderAll()}
 });
 /* --- ปลดล็อกเสียงตอนแตะครั้งแรก (iOS บังคับ) --- */
@@ -918,6 +1056,7 @@ document.getElementById('fileIn').onchange=function(e){
   document.getElementById('btnSound').textContent=S.sound?'SOUND ON':'SOUND OFF';
   renderAll(); await save();
   if(S.timer&&S.timer.endAt<=Date.now()) finishTimer();
+  else if(S.timer){keepAlive(true);ALARM_T=setTimeout(function(){if(S.timer)finishTimer()},S.timer.endAt-Date.now()+400)}
   heroX=worldPos(totalExp());
   requestAnimationFrame(draw);
 })();
